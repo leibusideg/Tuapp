@@ -58,7 +58,7 @@ app.layout = html.Div(className='grid-container', children=[
         )
     ]),
 
-    # 2. 中央上方：轴控制区域 (重构为左右两栏)
+    # 2. 中央上方：轴控制区域
     html.Div(id='axis-controls', className='layout-box', children=[
         
         # 左侧：X轴配置
@@ -101,8 +101,10 @@ app.layout = html.Div(className='grid-container', children=[
         html.Div("Waiting for file upload...", style={'color': '#546e7a', 'fontStyle': 'italic'})
     ]),
 
-    # 4. 中央：主图表显示区域 (添加 Loading)
-    html.Div(id='main-graph-container', className='layout-box', children=[
+    # 4. [修改] 主要内容区域 (合并图表和统计)
+    html.Div(id='main-content-container', className='layout-box', children=[
+        
+        # 图表区域
         dcc.Loading(
             id="loading-graph",
             type="circle",
@@ -110,36 +112,29 @@ app.layout = html.Div(className='grid-container', children=[
             children=[
                 dcc.Graph(
                     id='main-graph',
-                    style={'height': '100%', 'width': '100%'},
+                    style={'height': '60vh', 'minHeight': '400px', 'width': '100%'}, # 使用 minHeight 确保显示
                     config={'scrollZoom': True, 'displayModeBar': True, 'displaylogo': False},
                     figure=go.Figure(layout={'title': 'Please upload data', 'xaxis': {'visible': False}, 'yaxis': {'visible': False}})
                 )
             ]
-        )
+        ),
+        
+        # 统计区域
+        html.Div(id='stats-display', className='stats-container', children=[
+            html.Div(className='stat-box', children=[html.Div("-", className='stat-value'), html.Div("Count", className='stat-label')]),
+            html.Div(className='stat-box', children=[html.Div("-", className='stat-value'), html.Div("Mean", className='stat-label')]),
+            html.Div(className='stat-box', children=[html.Div("-", className='stat-value'), html.Div("Std Dev", className='stat-label')]),
+            html.Div(className='stat-box', children=[html.Div("-", className='stat-value'), html.Div("Min", className='stat-label')]),
+            html.Div(className='stat-box', children=[html.Div("-", className='stat-value'), html.Div("Max", className='stat-label')])
+        ])
     ]),
-
-    # 5. 中央下方：统计数据区域 (添加 Loading)
-    html.Div(id='stats-display-container', className='layout-box', style={'background': 'transparent', 'border': 'none', 'boxShadow': 'none', 'padding': '0'}, children=[
-        dcc.Loading(
-             id="loading-stats",
-             type="dot",
-             color="#3498db",
-             children=html.Div(id='stats-display', children=[
-                html.Div(className='stat-box', children=[html.Div("-", className='stat-value'), html.Div("Count", className='stat-label')]),
-                html.Div(className='stat-box', children=[html.Div("-", className='stat-value'), html.Div("Mean", className='stat-label')]),
-                html.Div(className='stat-box', children=[html.Div("-", className='stat-value'), html.Div("Std Dev", className='stat-label')]),
-                html.Div(className='stat-box', children=[html.Div("-", className='stat-value'), html.Div("Min", className='stat-label')]),
-                html.Div(className='stat-box', children=[html.Div("-", className='stat-value'), html.Div("Max", className='stat-label')])
-            ])
-        )
-    ])
 ])
 
 # ------------------------------------------------------------------------------
 # Callbacks
 # ------------------------------------------------------------------------------
 
-# 1. 上传回调
+# 1. 上传回调 (保持不变)
 @app.callback(
     [Output('stored-data', 'data'),
      Output('meta-info-display', 'children'),
@@ -188,7 +183,7 @@ def update_data_store(contents, filename):
         return None, html.Div("Error parsing file.", style={'color': 'red'}), [], None, [], None
 
 
-# 2. Auto-Range 回调
+# 2. Auto-Range 回调 (保持不变)
 @app.callback(
     [Output('input-min-x', 'value'),
      Output('input-max-x', 'value'),
@@ -230,7 +225,7 @@ def auto_update_input_ranges(data, x_col, y_col):
     return x_min, x_max, y_min_pad, y_max_pad
 
 
-# 3. 绘图与统计回调
+# 3. [修改] 绘图与统计回调
 @app.callback(
     [Output('main-graph', 'figure'),
      Output('stats-display', 'children')],
@@ -252,44 +247,59 @@ def update_graph_renderer(xmin, xmax, ymin, ymax, data, x_col, y_col):
     df = pd.DataFrame(data)
 
     try:
+        # 1. 提取与预处理
         if x_col == 'index':
-            x_data = df.index
+            x_raw = df.index
             x_label = "Index"
         else:
-            x_data = df[x_col]
+            x_raw = df[x_col]
             x_label = x_col
             if 'Time' in x_col or 'Date' in x_col:
                 try:
-                    x_data = pd.to_datetime(x_data)
+                    x_raw = pd.to_datetime(x_raw)
                 except:
                     pass
 
-        y_data = df[y_col]
-        y_data_numeric = pd.to_numeric(y_data, errors='coerce')
+        y_raw = df[y_col]
+        
+        # 2. 构造临时 DataFrame 用于排序 (解决折线图杂乱问题)
+        temp_df = pd.DataFrame({'x': x_raw, 'y': y_raw})
+        # 过滤 Y 轴非数值点
+        temp_df['y'] = pd.to_numeric(temp_df['y'], errors='coerce')
+        temp_df = temp_df.dropna(subset=['y'])
+        
+        # 排序
+        temp_df = temp_df.sort_values(by='x')
+        
+        x_data = temp_df['x']
+        y_data = temp_df['y']
         
     except KeyError:
         return go.Figure(layout={'title': 'Column not found'}), dash.no_update
 
+    # 3. 统计计算
     try:
-        valid_y = y_data_numeric.dropna()
         stats = {
-            'count': len(valid_y),
-            'mean': valid_y.mean(),
-            'std': valid_y.std(),
-            'min': valid_y.min(),
-            'max': valid_y.max()
+            'count': len(y_data),
+            'mean': y_data.mean(),
+            'std': y_data.std(),
+            'min': y_data.min(),
+            'max': y_data.max()
         }
     except Exception:
         stats = {'count': 0, 'mean': 0, 'std': 0, 'min': 0, 'max': 0}
 
+    # 4. 构建图表
     fig = go.Figure()
     
+    # [修改] Mode 改为 lines+markers
     fig.add_trace(go.Scatter(
         x=x_data,
         y=y_data,
-        mode='markers',
+        mode='lines+markers', 
         name=y_col,
-        marker=dict(size=6, color='#2980b9', opacity=0.7)
+        line=dict(width=2, color='#2980b9'),
+        marker=dict(size=5, color='#3498db', opacity=0.8)
     ))
 
     if not pd.isna(stats['mean']):
@@ -314,10 +324,10 @@ def update_graph_renderer(xmin, xmax, ymin, ymax, data, x_col, y_col):
         yaxis=dict(showgrid=True, gridcolor='#f0f0f0', zeroline=True, zerolinecolor='#dcdcdc')
     )
 
-    # 锁定 X 轴，开放 Y 轴缩放
     fig.update_xaxes(fixedrange=True)
     fig.update_yaxes(fixedrange=False)
 
+    # 5. 生成统计 HTML
     stats_html = [
         html.Div(className='stat-box', children=[
             html.Div(f"{stats['count']}", className='stat-value'),

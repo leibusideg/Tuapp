@@ -16,12 +16,11 @@ body {
     width: 100vw;
     /* 定义三列：左侧(上传)250px | 中间(图表)自适应 | 右侧(元数据)280px */
     grid-template-columns: 250px 1fr 280px;
-    /* [修改] 首行自适应，中间自适应，底部固定 */
-    grid-template-rows: auto 1fr 140px; 
+    /* [修改] 简化为两行：头部控制区 | 主要内容区(图表+统计) */
+    grid-template-rows: auto 1fr;
     grid-template-areas:
         "upload controls meta"
-        "empty  graph    meta"
-        "empty  stats    meta";
+        "empty  content  meta";
     gap: 15px;
     padding: 15px;
 }
@@ -52,16 +51,15 @@ body {
     background-color: #eef6fc;
 }
 
-/* [修改] 中央上方：轴控制区域 */
+/* 中央上方：轴控制区域 */
 #axis-controls {
     grid-area: controls;
-    flex-direction: row !important; /* 强制横向排列 */
+    flex-direction: row !important;
     justify-content: space-between;
     gap: 20px;
     background-color: #fff;
 }
 
-/* 控制分组列 (X轴一列，Y轴一列) */
 .control-column {
     flex: 1;
     display: flex;
@@ -83,7 +81,6 @@ body {
     padding-bottom: 3px;
 }
 
-/* 输入框行容器 */
 .range-inputs-row {
     display: flex;
     justify-content: space-between;
@@ -109,13 +106,13 @@ body {
     padding: 6px;
     border: 1px solid #ccc;
     border-radius: 4px;
-    box-sizing: border-box; /* 确保padding不撑大宽度 */
+    box-sizing: border-box;
 }
 
-/* [修改] 右侧：元数据区域 (高亮显示) */
+/* 右侧：元数据区域 */
 #meta-info-display {
     grid-area: meta;
-    background-color: #f0f9ff; /* 淡蓝色背景 */
+    background-color: #f0f9ff;
     border-color: #b3e5fc;
     overflow-y: auto;
 }
@@ -125,42 +122,47 @@ body {
     color: #0277bd;
 }
 
-/* 中央：主图表区域 */
-#main-graph-container {
-    grid-area: graph;
-    padding: 10px; /* 减少内边距给图表更多空间 */
+/* [新增] 主要内容容器 (图表 + 统计) */
+#main-content-container {
+    grid-area: content;
+    padding: 20px;
+    overflow-y: auto; /* 允许垂直滚动 */
 }
 
-/* [修改] 中央下方：统计数据区域 */
-#stats-display {
-    grid-area: stats;
+/* [新增] 统计容器类 */
+.stats-container {
     display: flex;
-    flex-direction: row;
-    justify-content: space-evenly; /* 均匀分布 */
-    align-items: center;
-    background-color: transparent;
-    box-shadow: none;
-    border: none;
-    padding: 0;
+    justify-content: space-evenly;
+    flex-wrap: wrap; /* 允许换行 */
+    width: 100%;
+    margin-top: 30px;
+    padding-bottom: 20px;
+    gap: 20px;
 }
 
-/* [修改] 统计卡片样式 - 大字体版 */
+/* 统计卡片样式 */
 .stat-box {
     background-color: white;
     border: 1px solid #d1d5db;
-    border-bottom: 4px solid #3498db; /* 底部强调色 */
+    border-bottom: 4px solid #3498db;
     border-radius: 10px;
-    padding: 10px 20px;
-    min-width: 140px;
+    padding: 15px 25px;
+    min-width: 150px;
     text-align: center;
     box-shadow: 0 4px 6px rgba(0,0,0,0.05);
     display: flex;
     flex-direction: column;
     justify-content: center;
+    transition: transform 0.2s;
+}
+
+.stat-box:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 12px rgba(0,0,0,0.1);
 }
 
 .stat-value {
-    font-size: 2.2rem; /* 极大字体 */
+    font-size: 2rem;
     font-weight: 800;
     color: #2c3e50;
     line-height: 1.2;
