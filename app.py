@@ -4,6 +4,7 @@ import dash
 from dash import dcc, html, Input, Output, State
 import pandas as pd
 import plotly.graph_objects as go
+import numpy as np
 
 # 初始化 Dash 应用
 app = dash.Dash(__name__, title="Proffast Data Visualizer")
@@ -27,7 +28,7 @@ def parse_contents(contents, filename):
         else:
             meta = {'temp': 'N/A', 'lat': 'N/A', 'lon': 'N/A'}
 
-        return df, meta  # 注意：此处改为直接返回 DataFrame 对象，便于后续处理列名
+        return df, meta
         
     except Exception as e:
         print(f"Error parsing {filename}: {e}")
@@ -55,7 +56,7 @@ app.layout = html.Div(className='grid-container', children=[
         )
     ]),
 
-    # 2. 中央上方：轴控制区域 (包含下拉框和输入框)
+    # 2. 中央上方：轴控制区域
     html.Div(id='axis-controls', className='layout-box', children=[
         # 第一行：下拉选择框
         html.Div(className='dropdown-row', children=[
@@ -70,22 +71,24 @@ app.layout = html.Div(className='grid-container', children=[
         ]),
         
         # 第二行：范围输入框
+        # 注意：X轴改为 type='text' 以兼容时间字符串，Y轴保持 type='number'
+        # 添加 debounce=True 防止连续输入触发回调
         html.Div(className='input-row', children=[
             html.Div(className='input-group', children=[
                 html.Label("Min X:"),
-                dcc.Input(id='input-min-x', type='number', placeholder='Auto', className='control-input')
+                dcc.Input(id='input-min-x', type='text', placeholder='Auto', debounce=True, className='control-input')
             ]),
             html.Div(className='input-group', children=[
                 html.Label("Max X:"),
-                dcc.Input(id='input-max-x', type='number', placeholder='Auto', className='control-input')
+                dcc.Input(id='input-max-x', type='text', placeholder='Auto', debounce=True, className='control-input')
             ]),
             html.Div(className='input-group', children=[
                 html.Label("Min Y:"),
-                dcc.Input(id='input-min-y', type='number', placeholder='Auto', className='control-input')
+                dcc.Input(id='input-min-y', type='number', placeholder='Auto', debounce=True, className='control-input')
             ]),
             html.Div(className='input-group', children=[
                 html.Label("Max Y:"),
-                dcc.Input(id='input-max-y', type='number', placeholder='Auto', className='control-input')
+                dcc.Input(id='input-max-y', type='number', placeholder='Auto', debounce=True, className='control-input')
             ]),
         ])
     ]),
@@ -102,6 +105,8 @@ app.layout = html.Div(className='grid-container', children=[
         dcc.Graph(
             id='main-graph',
             style={'height': '100%', 'width': '100%'},
+            # 启用滚轮缩放 scrollZoom
+            config={'scrollZoom': True, 'displayModeBar': True},
             figure=go.Figure(layout={'title': 'Please upload data', 'xaxis': {'visible': False}, 'yaxis': {'visible': False}})
         )
     ]),
@@ -138,7 +143,6 @@ def update_data_store(contents, filename):
     df, meta = parse_contents(contents, filename)
 
     if df is not None and meta is not None:
-        # 构造元数据展示文本
         meta_display = html.Div([
             html.H3("File Metadata"),
             html.Hr(),
@@ -148,22 +152,16 @@ def update_data_store(contents, filename):
             html.P([html.Strong("Lon: "), f"{meta.get('lon', 'N/A')}"]),
         ])
         
-        # 构造下拉框选项
         columns = df.columns.tolist()
         options = [{'label': col, 'value': col} for col in columns]
-        
-        # X轴选项：增加 Index 选项
         x_options = [{'label': 'Data Point Index', 'value': 'index'}] + options
         
-        # 默认选中逻辑
-        # X轴：优先 LocalTime > time > index
         default_x = 'index'
         if 'LocalTime' in columns:
             default_x = 'LocalTime'
         elif 'time' in columns:
             default_x = 'time'
             
-        # Y轴：优先 XCO2 > XCH4 > 第二列
         default_y = None
         if 'XCO2' in columns:
             default_y = 'XCO2'
@@ -176,50 +174,101 @@ def update_data_store(contents, filename):
     else:
         return None, html.Div("Error parsing file.", style={'color': 'red'}), [], None, [], None
 
-# 2. 绘图与统计回调：监听数据与下拉框变化
+
+# 2. [NEW] Auto-Range 回调：当数据或轴改变时，自动计算范围并填充输入框
 @app.callback(
-    [Output('main-graph', 'figure'),
-     Output('stats-display', 'children')],
+    [Output('input-min-x', 'value'),
+     Output('input-max-x', 'value'),
+     Output('input-min-y', 'value'),
+     Output('input-max-y', 'value')],
     [Input('stored-data', 'data'),
      Input('xaxis-selector', 'value'),
      Input('yaxis-selector', 'value')]
 )
-def update_graph_and_stats(data, x_col, y_col):
+def auto_update_input_ranges(data, x_col, y_col):
+    if data is None or x_col is None or y_col is None:
+        return None, None, None, None
+
+    df = pd.DataFrame(data)
+    
+    # 获取 X 范围
+    if x_col == 'index':
+        x_vals = df.index
+    else:
+        x_vals = df[x_col]
+        # 尝试转换时间
+        try:
+            x_vals = pd.to_datetime(x_vals)
+        except:
+            pass
+
+    # 获取 Y 范围
+    y_vals = pd.to_numeric(df[y_col], errors='coerce').dropna()
+
+    if len(x_vals) == 0 or len(y_vals) == 0:
+        return None, None, None, None
+
+    # 计算 Min/Max
+    x_min, x_max = x_vals.min(), x_vals.max()
+    y_min, y_max = y_vals.min(), y_vals.max()
+
+    # 对数值型 Y 轴添加 5% 的缓冲 (Padding)
+    y_range = y_max - y_min
+    if y_range == 0:
+        y_padding = 1.0 # 避免单一值时的错误
+    else:
+        y_padding = y_range * 0.05
+    
+    y_min_pad = y_min - y_padding
+    y_max_pad = y_max + y_padding
+
+    return x_min, x_max, y_min_pad, y_max_pad
+
+
+# 3. [UPDATED] 绘图回调：监听输入框 (Debounced) 和数据，绘制图表
+# 这是一个 chained callback：Upload -> Auto-Range -> Plot
+@app.callback(
+    [Output('main-graph', 'figure'),
+     Output('stats-display', 'children')],
+    [Input('input-min-x', 'value'),
+     Input('input-max-x', 'value'),
+     Input('input-min-y', 'value'),
+     Input('input-max-y', 'value'),
+     Input('stored-data', 'data'),
+     Input('xaxis-selector', 'value'),
+     Input('yaxis-selector', 'value')]
+)
+def update_graph_renderer(xmin, xmax, ymin, ymax, data, x_col, y_col):
     if data is None:
-        empty_fig = go.Figure(layout={'title': 'No Data Loaded', 'xaxis': {'visible': False}, 'yaxis': {'visible': False}})
-        return empty_fig, dash.no_update
+        return go.Figure(layout={'title': 'No Data Loaded'}), dash.no_update
     
     if x_col is None or y_col is None:
         return dash.no_update, dash.no_update
 
     df = pd.DataFrame(data)
 
-    # 1. 提取绘图数据
+    # 1. 准备绘图数据
     try:
-        # 获取 X 数据
         if x_col == 'index':
             x_data = df.index
             x_label = "Index"
         else:
             x_data = df[x_col]
             x_label = x_col
-            # 尝试转为时间格式，如果是 LocalTime
+            # 处理时间
             if 'Time' in x_col or 'Date' in x_col:
                 try:
                     x_data = pd.to_datetime(x_data)
                 except:
                     pass
 
-        # 获取 Y 数据
         y_data = df[y_col]
-        
-        # 确保数据是数值型以便统计 (如果选了非数值列可能会报错，简单处理)
         y_data_numeric = pd.to_numeric(y_data, errors='coerce')
         
     except KeyError:
         return go.Figure(layout={'title': 'Column not found'}), dash.no_update
 
-    # 2. 计算统计数据
+    # 2. 统计计算
     try:
         valid_y = y_data_numeric.dropna()
         stats = {
@@ -235,7 +284,6 @@ def update_graph_and_stats(data, x_col, y_col):
     # 3. 构建图表
     fig = go.Figure()
     
-    # 散点图
     fig.add_trace(go.Scatter(
         x=x_data,
         y=y_data,
@@ -244,7 +292,6 @@ def update_graph_and_stats(data, x_col, y_col):
         marker=dict(size=6, color='#2980b9', opacity=0.7)
     ))
 
-    # 均值线 (仅当均值为数字时)
     if not pd.isna(stats['mean']):
         fig.add_hline(
             y=stats['mean'], 
@@ -254,7 +301,7 @@ def update_graph_and_stats(data, x_col, y_col):
             annotation_position="bottom right"
         )
 
-    # 布局设置
+    # 4. 应用视图控制和范围
     fig.update_layout(
         title=f"{y_col} vs {x_label}",
         xaxis_title=x_label,
@@ -262,11 +309,20 @@ def update_graph_and_stats(data, x_col, y_col):
         hovermode='closest',
         plot_bgcolor='white',
         margin=dict(l=50, r=30, t=50, b=50),
+        
+        # 应用输入框的范围 (如果输入框有值)
+        xaxis_range=[xmin, xmax] if (xmin is not None and xmax is not None) else None,
+        yaxis_range=[ymin, ymax] if (ymin is not None and ymax is not None) else None,
+        
         xaxis=dict(showgrid=True, gridcolor='#f0f0f0'),
         yaxis=dict(showgrid=True, gridcolor='#f0f0f0')
     )
 
-    # 4. 构建统计 HTML
+    # 关键：锁定 X 轴，允许 Y 轴缩放
+    fig.update_xaxes(fixedrange=True)
+    fig.update_yaxes(fixedrange=False)
+
+    # 5. 构建统计 HTML
     stats_html = [
         html.Div(className='stat-box', children=[
             html.Div(f"{stats['count']}", className='stat-value'),
