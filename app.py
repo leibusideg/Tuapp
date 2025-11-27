@@ -8,22 +8,74 @@ import plotly.graph_objects as go
 # 初始化 Dash 应用
 app = dash.Dash(__name__, title="Proffast Data Visualizer")
 
-# 数据解析工具函数
+# ------------------------------------------------------------------------------
+# 辅助函数: 数据解析
+# ------------------------------------------------------------------------------
 def parse_contents(contents, filename):
+    """
+    解析上传的文件内容，返回 DataFrame 字典列表和元数据字典。
+    """
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
+    
     try:
-        # 假设用户上传的是 UTF-8 编码的 CSV
-        df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
-        return df
+        # 1. 读取 CSV，处理分隔符后的空格 (skipinitialspace=True)
+        # 假设文件编码为 utf-8
+        df = pd.read_csv(io.StringIO(decoded.decode('utf-8')), skipinitialspace=True)
+        
+        # 2. 清洗列名：去除前后空格
+        df.columns = df.columns.str.strip()
+        
+        # 3. 提取元数据 (取第一行数据)
+        # 目标列: gndT (温度), latdeg (纬度), londeg (经度)
+        meta = {}
+        if not df.empty:
+            meta['temp'] = df['gndT'].iloc[0] if 'gndT' in df.columns else "N/A"
+            meta['lat'] = df['latdeg'].iloc[0] if 'latdeg' in df.columns else "N/A"
+            meta['lon'] = df['londeg'].iloc[0] if 'londeg' in df.columns else "N/A"
+        else:
+            meta = {'temp': 'N/A', 'lat': 'N/A', 'lon': 'N/A'}
+
+        # 4. 准备绘图数据 (标准化列名 x_plot, y_plot)
+        # X轴优先: LocalTime
+        x_col = 'LocalTime'
+        if x_col not in df.columns:
+            # 如果找不到 LocalTime，尝试使用第一列
+            x_col = df.columns[0] if len(df.columns) > 0 else None
+
+        # Y轴优先: XCO2 -> XCH4 -> 第6列 (spectrum 后的数据) -> 第2列
+        y_col = None
+        if 'XCO2' in df.columns:
+            y_col = 'XCO2'
+        elif 'XCH4' in df.columns:
+            y_col = 'XCH4'
+        elif len(df.columns) > 5:
+            y_col = df.columns[5] # 假设索引5是某个数值列
+        elif len(df.columns) > 1:
+            y_col = df.columns[1]
+
+        # 如果找到对应的列，创建标准化的绘图列，方便前端直接使用
+        if x_col and x_col in df.columns:
+            df['x_plot'] = df[x_col]
+        if y_col and y_col in df.columns:
+            df['y_plot'] = df[y_col]
+            
+        # 记录识别到的列名以便调试
+        meta['x_col_name'] = x_col
+        meta['y_col_name'] = y_col
+
+        return df.to_dict('records'), meta
+        
     except Exception as e:
         print(f"Error parsing {filename}: {e}")
-        return None
+        return None, None
 
-# 定义应用布局
+# ------------------------------------------------------------------------------
+# Layout
+# ------------------------------------------------------------------------------
 app.layout = html.Div(className='grid-container', children=[
     
-    # 0. 数据存储组件 (不可见)
+    # 0. 数据存储组件 (浏览器端缓存)
     dcc.Store(id='stored-data'),
 
     # 1. 左上角：上传组件区域
@@ -44,7 +96,6 @@ app.layout = html.Div(className='grid-container', children=[
                 'textAlign': 'center',
                 'cursor': 'pointer'
             },
-            # 允许上传单个文件
             multiple=False
         )
     ]),
@@ -114,39 +165,36 @@ app.layout = html.Div(className='grid-container', children=[
 )
 def update_data_store(contents, filename):
     if contents is None:
-        # 初始状态，不更新
         return dash.no_update, dash.no_update
 
-    df = parse_contents(contents, filename)
+    # 调用解析函数
+    data, meta = parse_contents(contents, filename)
 
-    if df is not None:
-        # 提取元数据 (假设CSV包含 temperature, latitude, longitude 列)
-        # 如果列不存在，使用 "N/A" 避免报错
-        try:
-            temp = df['temperature'].iloc[0] if 'temperature' in df.columns else "N/A"
-            lat = df['latitude'].iloc[0] if 'latitude' in df.columns else "N/A"
-            lon = df['longitude'].iloc[0] if 'longitude' in df.columns else "N/A"
-            rows = len(df)
-        except Exception as e:
-            return None, html.Div(f"Error reading metadata: {e}", style={'color': 'red'})
-
-        # 构建右侧元数据面板的 HTML
-        meta_html = html.Div([
+    if data is not None and meta is not None:
+        # 构造元数据展示文本
+        # 格式: 温度: {temp} K | 纬度: {lat} | 经度: {lon}
+        meta_display = html.Div([
             html.H3("File Metadata"),
             html.Hr(),
             html.P([html.Strong("Filename: "), filename]),
-            html.P([html.Strong("Temp: "), str(temp)]),
-            html.P([html.Strong("Lat: "), str(lat)]),
-            html.P([html.Strong("Lon: "), str(lon)]),
-            html.P([html.Strong("Rows: "), str(rows)], style={'color': '#666', 'fontSize': '0.9em'})
+            html.P([html.Strong("温度 (gndT): "), f"{meta.get('temp', 'N/A')} K"]),
+            html.P([html.Strong("纬度 (lat): "), f"{meta.get('lat', 'N/A')}"]),
+            html.P([html.Strong("经度 (lon): "), f"{meta.get('lon', 'N/A')}"]),
+            html.P([html.Strong("Target Y: "), f"{meta.get('y_col_name', 'Unknown')}"], style={'fontSize': '0.8em', 'color': '#666'}),
+            html.P([html.Strong("Records: "), f"{len(data)}"], style={'fontSize': '0.8em', 'color': '#666'})
         ])
-
-        # 将 DataFrame 转换为字典列表存储 (records format)
-        return df.to_dict('records'), meta_html
+        
+        return data, meta_display
     else:
-        return None, html.Div("Error parsing file format.", style={'color': 'red'})
+        # 错误处理
+        error_display = html.Div([
+            html.H3("Error"),
+            html.Hr(),
+            html.P("Failed to parse file.", style={'color': 'red'}),
+            html.P("Please ensure the CSV matches Proffastpylot format.")
+        ])
+        return None, error_display
 
 
 if __name__ == '__main__':
-    # 按照指示使用 app.run() 替代 app.run_server()
     app.run(debug=True, port=8050)
